@@ -86,6 +86,38 @@ def safe_rot_update(prev_rot_array, rot_array):
         return prev_rot_array, False
     return rot_array, True
 
+def get_Brobot_world_head_yaw_rot(Brobot_world_head_rot):
+    # Extract R_Brobot_world_head_yaw from Brobot_world_head_rot under (basis) Robot Convention.
+    Brobot_world_head_x_axis = Brobot_world_head_rot[:, 0].copy()
+    Brobot_world_head_x_axis[2] = 0.0
+    x_norm = np.linalg.norm(Brobot_world_head_x_axis)
+    if not np.isfinite(x_norm) or np.isclose(x_norm, 0.0, atol=1e-6):
+        return np.eye(3)
+
+    Brobot_world_head_x_axis /= x_norm
+    Brobot_world_head_z_axis = np.array([0.0, 0.0, 1.0])
+    Brobot_world_head_y_axis = np.cross(Brobot_world_head_z_axis, Brobot_world_head_x_axis)
+    Brobot_world_head_y_axis /= np.linalg.norm(Brobot_world_head_y_axis)
+    return np.column_stack([Brobot_world_head_x_axis, Brobot_world_head_y_axis, Brobot_world_head_z_axis])
+
+def transform_IPunitree_Brobot_world_arm_to_head_then_waist(IPunitree_Brobot_world_arm, Brobot_world_head, arm_reference_mode):
+    IPunitree_Brobot_head_arm = IPunitree_Brobot_world_arm.copy()
+    # Transfer from WORLD to HEAD coordinate:
+    # - "head_position": translation adjustment only.
+    # - "head_yaw": left-multiply R_Brobot_world_head_yaw^T, ignoring pitch/roll.
+    if arm_reference_mode == "head_yaw":
+        R_Brobot_world_head_yaw = get_Brobot_world_head_yaw_rot(Brobot_world_head[:3, :3])
+        IPunitree_Brobot_head_arm[:3, :3] = R_Brobot_world_head_yaw.T @ IPunitree_Brobot_world_arm[:3, :3]
+        IPunitree_Brobot_head_arm[:3, 3] = R_Brobot_world_head_yaw.T @ (IPunitree_Brobot_world_arm[:3, 3] - Brobot_world_head[:3, 3])
+    else:
+        IPunitree_Brobot_head_arm[:3, 3] = IPunitree_Brobot_world_arm[:3, 3] - Brobot_world_head[:3, 3]
+
+    # Translate the origin of IPunitree_Brobot_head_arm from HEAD to WAIST.
+    IPunitree_Brobot_waist_arm = IPunitree_Brobot_head_arm.copy()
+    IPunitree_Brobot_waist_arm[0, 3] += 0.15
+    IPunitree_Brobot_waist_arm[2, 3] += 0.45
+    return IPunitree_Brobot_waist_arm
+
 # constants variable
 T_TO_UNITREE_HUMANOID_LEFT_ARM = np.array([[1, 0, 0, 0],
                                            [0, 0,-1, 0],
@@ -195,7 +227,8 @@ class TeleData:
 class TeleVuerWrapper:
     def __init__(self, use_hand_tracking: bool, binocular: bool=True, img_shape: tuple=(480, 1280), display_fps: float=30.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
-                       cert_file: str=None, key_file: str=None, return_hand_rot_data: bool=False):
+                       cert_file: str=None, key_file: str=None, return_hand_rot_data: bool=False,
+                       arm_reference_mode: Literal["head_position", "head_yaw"]="head_yaw"):
         """
         TeleVuerWrapper is a wrapper for the TeleVuer class, which handles XR device's data suit for robot control.
         It initializes the TeleVuer instance with the specified parameters and provides a method to get motion state data.
@@ -211,6 +244,9 @@ class TeleVuerWrapper:
         :param webrtc_url: str, URL for the webrtc offer. must be provided if webrtc is True.
         :param cert_file: str, path to the SSL certificate file.
         :param key_file: str, path to the SSL key file.
+        :param arm_reference_mode: str, controls how wrist poses are expressed for IK.
+            * "head_position": transfer from WORLD to HEAD with translation adjustment only.
+            * "head_yaw": default mode; transfer from WORLD to HEAD with R_Brobot_world_head_yaw^T, ignoring pitch/roll.
 
         Note:
 
@@ -233,8 +269,13 @@ class TeleVuerWrapper:
               ego           |      ego view (robot + VR)      |    Yes (small)     |     zmq or webrtc        |   if both enabled, webrtc prioritized
         --------------              -------------------           --------------       -----------------                     -------
         """
+        if display_mode not in ("immersive", "pass-through", "ego"):
+            raise ValueError(f"[TeleVuerWrapper] Unknown display_mode: {display_mode}")
+        if arm_reference_mode not in ("head_position", "head_yaw"):
+            raise ValueError(f"[TeleVuerWrapper] Unknown arm_reference_mode: {arm_reference_mode}")
         self.use_hand_tracking = use_hand_tracking
         self.return_hand_rot_data = return_hand_rot_data
+        self.arm_reference_mode = arm_reference_mode
         self.tvuer = TeleVuer(use_hand_tracking=use_hand_tracking, binocular=binocular, img_shape=img_shape, display_fps=display_fps,
                               display_mode=display_mode, zmq=zmq, webrtc=webrtc, webrtc_url=webrtc_url, 
                               cert_file=cert_file, key_file=key_file)
@@ -290,22 +331,12 @@ class TeleVuerWrapper:
             left_IPunitree_Brobot_world_arm = left_IPxr_Brobot_world_arm @ (T_TO_UNITREE_HUMANOID_LEFT_ARM if left_arm_is_valid else np.eye(4))
             right_IPunitree_Brobot_world_arm = right_IPxr_Brobot_world_arm @ (T_TO_UNITREE_HUMANOID_RIGHT_ARM if right_arm_is_valid else np.eye(4))
 
-            # Transfer from WORLD to HEAD coordinate (translation adjustment only)
-            left_IPunitree_Brobot_head_arm = left_IPunitree_Brobot_world_arm.copy()
-            right_IPunitree_Brobot_head_arm = right_IPunitree_Brobot_world_arm.copy()
-            left_IPunitree_Brobot_head_arm[0:3, 3]  = left_IPunitree_Brobot_head_arm[0:3, 3] - Brobot_world_head[0:3, 3]
-            right_IPunitree_Brobot_head_arm[0:3, 3] = right_IPunitree_Brobot_world_arm[0:3, 3] - Brobot_world_head[0:3, 3]
-
             # =====coordinate origin offset=====
             # The origin of the coordinate for IK Solve is near the WAIST joint motor. You can use teleop/robot_control/robot_arm_ik.py Unit_Test to visualize it.
-            # The origin of the coordinate of IPunitree_Brobot_head_arm is HEAD. 
-            # So it is necessary to translate the origin of IPunitree_Brobot_head_arm from HEAD to WAIST.
-            left_IPunitree_Brobot_wrist_arm = left_IPunitree_Brobot_head_arm.copy()
-            right_IPunitree_Brobot_wrist_arm = right_IPunitree_Brobot_head_arm.copy()
-            left_IPunitree_Brobot_wrist_arm[0, 3] +=0.15 # x
-            right_IPunitree_Brobot_wrist_arm[0,3] +=0.15
-            left_IPunitree_Brobot_wrist_arm[2, 3] +=0.45 # z
-            right_IPunitree_Brobot_wrist_arm[2,3] +=0.45
+            # Transfer IPunitree_Brobot_world_arm to IPunitree_Brobot_head_arm first, then translate the origin from HEAD to WAIST.
+            # "head_yaw" additionally left-multiplies R_Brobot_world_head_yaw^T, ignoring pitch/roll.
+            left_IPunitree_Brobot_waist_arm = transform_IPunitree_Brobot_world_arm_to_head_then_waist(left_IPunitree_Brobot_world_arm, Brobot_world_head, self.arm_reference_mode)
+            right_IPunitree_Brobot_waist_arm = transform_IPunitree_Brobot_world_arm_to_head_then_waist(right_IPunitree_Brobot_world_arm, Brobot_world_head, self.arm_reference_mode)
 
             # -----------------------------------hand position----------------------------------------
             if left_arm_is_valid and right_arm_is_valid:
@@ -365,8 +396,8 @@ class TeleVuerWrapper:
                 right_Brobot_arm_hand_rot = None
             return TeleData(
                 head_pose=Brobot_world_head,
-                left_wrist_pose=left_IPunitree_Brobot_wrist_arm,
-                right_wrist_pose=right_IPunitree_Brobot_wrist_arm,
+                left_wrist_pose=left_IPunitree_Brobot_waist_arm,
+                right_wrist_pose=right_IPunitree_Brobot_waist_arm,
                 left_hand_pos=left_IPunitree_Brobot_arm_hand_pos,
                 right_hand_pos=right_IPunitree_Brobot_arm_hand_pos,
                 left_hand_rot=left_Brobot_arm_hand_rot,
@@ -391,28 +422,16 @@ class TeleVuerWrapper:
             left_IPunitree_Brobot_world_arm  = T_ROBOT_OPENXR @ left_IPunitree_Bxr_world_arm @ T_OPENXR_ROBOT
             right_IPunitree_Brobot_world_arm = T_ROBOT_OPENXR @ right_IPunitree_Bxr_world_arm @ T_OPENXR_ROBOT
 
-            # Transfer from WORLD to HEAD coordinate (translation adjustment only)
-            left_IPunitree_Brobot_head_arm = left_IPunitree_Brobot_world_arm.copy()
-            right_IPunitree_Brobot_head_arm = right_IPunitree_Brobot_world_arm.copy()
-            left_IPunitree_Brobot_head_arm[0:3, 3]  = left_IPunitree_Brobot_head_arm[0:3, 3] - Brobot_world_head[0:3, 3]
-            right_IPunitree_Brobot_head_arm[0:3, 3] = right_IPunitree_Brobot_head_arm[0:3, 3] - Brobot_world_head[0:3, 3]
-
             # =====coordinate origin offset=====
             # The origin of the coordinate for IK Solve is near the WAIST joint motor. You can use teleop/robot_control/robot_arm_ik.py Unit_Test to check it.
-            # The origin of the coordinate of IPunitree_Brobot_head_arm is HEAD. 
-            # So it is necessary to translate the origin of IPunitree_Brobot_head_arm from HEAD to WAIST.
-            left_IPunitree_Brobot_wrist_arm = left_IPunitree_Brobot_head_arm.copy()
-            right_IPunitree_Brobot_wrist_arm = right_IPunitree_Brobot_head_arm.copy()
-            left_IPunitree_Brobot_wrist_arm[0, 3] +=0.15 # x
-            right_IPunitree_Brobot_wrist_arm[0,3] +=0.15
-            left_IPunitree_Brobot_wrist_arm[2, 3] +=0.45 # z
-            right_IPunitree_Brobot_wrist_arm[2,3] +=0.45
-            # left_IPunitree_Brobot_waist_arm[1, 3] +=0.02 # y
-            # right_IPunitree_Brobot_waist_arm[1,3] +=0.02
+            # Transfer IPunitree_Brobot_world_arm to IPunitree_Brobot_head_arm first, then translate the origin from HEAD to WAIST.
+            # "head_yaw" additionally left-multiplies R_Brobot_world_head_yaw^T, ignoring pitch/roll.
+            left_IPunitree_Brobot_waist_arm = transform_IPunitree_Brobot_world_arm_to_head_then_waist(left_IPunitree_Brobot_world_arm, Brobot_world_head, self.arm_reference_mode)
+            right_IPunitree_Brobot_waist_arm = transform_IPunitree_Brobot_world_arm_to_head_then_waist(right_IPunitree_Brobot_world_arm, Brobot_world_head, self.arm_reference_mode)
             return TeleData(
                 head_pose=Brobot_world_head,
-                left_wrist_pose=left_IPunitree_Brobot_wrist_arm,
-                right_wrist_pose=right_IPunitree_Brobot_wrist_arm,
+                left_wrist_pose=left_IPunitree_Brobot_waist_arm,
+                right_wrist_pose=right_IPunitree_Brobot_waist_arm,
                 left_ctrl_trigger=self.tvuer.left_ctrl_trigger,
                 left_ctrl_triggerValue=10.0 - self.tvuer.left_ctrl_triggerValue * 10,
                 left_ctrl_squeeze=self.tvuer.left_ctrl_squeeze,
