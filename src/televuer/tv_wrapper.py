@@ -194,6 +194,7 @@ class TeleData:
     right_hand_squeeze: bool = False       # True if hand is making a fist
     right_hand_squeezeValue: float = 0.0   # (0.0 → 1.0) degree of hand squeeze
 
+    motion_data_ready: bool = False        # True after the first hand or controller motion data event is received
     # controller tracking
     # https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html
     # https://immersive-web.github.io/webxr-gamepads-module/
@@ -402,6 +403,7 @@ class TeleVuerWrapper:
                 right_hand_pos=right_IPunitree_Brobot_arm_hand_pos,
                 left_hand_rot=left_Brobot_arm_hand_rot,
                 right_hand_rot=right_Brobot_arm_hand_rot,
+                motion_data_ready=self.tvuer.motion_data_ready,
                 left_hand_pinch=self.tvuer.left_hand_pinch,
                 left_hand_pinchValue=self.tvuer.left_hand_pinchValue * 100.0,
                 left_hand_squeeze=self.tvuer.left_hand_squeeze,
@@ -432,6 +434,7 @@ class TeleVuerWrapper:
                 head_pose=Brobot_world_head,
                 left_wrist_pose=left_IPunitree_Brobot_waist_arm,
                 right_wrist_pose=right_IPunitree_Brobot_waist_arm,
+                motion_data_ready=self.tvuer.motion_data_ready,
                 left_ctrl_trigger=self.tvuer.left_ctrl_trigger,
                 left_ctrl_triggerValue=10.0 - self.tvuer.left_ctrl_triggerValue * 10,
                 left_ctrl_squeeze=self.tvuer.left_ctrl_squeeze,

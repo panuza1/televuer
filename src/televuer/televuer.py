@@ -138,6 +138,7 @@ class TeleVuer:
         self.head_pose_shared = Array('d', 16, lock=True)
         self.left_arm_pose_shared = Array('d', 16, lock=True)
         self.right_arm_pose_shared = Array('d', 16, lock=True)
+        self.motion_data_ready_shared = Value('b', False, lock=True)
         if self.use_hand_tracking:
             self.left_hand_position_shared = Array('d', 75, lock=True)
             self.right_hand_position_shared = Array('d', 75, lock=True)
@@ -261,6 +262,8 @@ class TeleVuer:
 
             extract_controllers(left_controller, "left")
             extract_controllers(right_controller, "right")
+            with self.motion_data_ready_shared.get_lock():
+                self.motion_data_ready_shared.value = True
         except:
             pass
 
@@ -307,6 +310,8 @@ class TeleVuer:
             extract_hand_poses(right_hand_data, self.right_arm_pose_shared, self.right_hand_position_shared, self.right_hand_orientation_shared)
             extract_hands(left_hand, "left")
             extract_hands(right_hand, "right")
+            with self.motion_data_ready_shared.get_lock():
+                self.motion_data_ready_shared.value = True
 
         except:
             pass
@@ -863,3 +868,9 @@ class TeleVuer:
         """bool, right controller 'B' button pressed."""
         with self.right_ctrl_bButton_shared.get_lock():
             return self.right_ctrl_bButton_shared.value
+
+    @property
+    def motion_data_ready(self):
+        """bool, whether at least one hand or controller motion data event has been received."""
+        with self.motion_data_ready_shared.get_lock():
+            return self.motion_data_ready_shared.value
