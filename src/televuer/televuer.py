@@ -1,5 +1,5 @@
 from vuer import Vuer
-from vuer.schemas import ImageBackground, Hands, MotionControllers, WebRTCVideoPlane, WebRTCStereoVideoPlane
+from vuer.schemas import Body, ImageBackground, Hands, MotionControllers, WebRTCVideoPlane, WebRTCStereoVideoPlane
 from multiprocessing import Value, Array, Process, shared_memory
 import numpy as np
 import asyncio
@@ -11,7 +11,7 @@ from typing import Literal
 
 
 class TeleVuer:
-    def __init__(self, use_hand_tracking: bool, binocular: bool=True, img_shape: tuple=None, display_fps: float=30.0,
+    def __init__(self, use_hand_tracking: bool, use_body_tracking: bool=False, binocular: bool=True, img_shape: tuple=None, display_fps: float=30.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
                        cert_file: str=None, key_file: str=None):
         """
@@ -53,6 +53,7 @@ class TeleVuer:
 
         """
         self.use_hand_tracking = use_hand_tracking
+        self.use_body_tracking = use_body_tracking
         self.binocular = binocular
         if img_shape is None:
             raise ValueError("[TeleVuer] img_shape must be provided.")
@@ -94,6 +95,8 @@ class TeleVuer:
             self.vuer.add_handler("HAND_MOVE")(self.on_hand_move)
         else:
             self.vuer.add_handler("CONTROLLER_MOVE")(self.on_controller_move)
+        if self.use_body_tracking:
+            self.vuer.add_handler("BODY_MOVE")(self.on_body_move)
 
         self.display_mode = display_mode
         self.zmq = zmq
@@ -139,6 +142,9 @@ class TeleVuer:
         self.left_arm_pose_shared = Array('d', 16, lock=True)
         self.right_arm_pose_shared = Array('d', 16, lock=True)
         self.motion_data_ready_shared = Value('b', False, lock=True)
+        if self.use_body_tracking:
+            self.body_pose_shared = Array('d', 33 * 16, lock=True)
+            self.body_tracking_ready_shared = Value('b', False, lock=True)
         if self.use_hand_tracking:
             self.left_hand_position_shared = Array('d', 75, lock=True)
             self.right_hand_position_shared = Array('d', 75, lock=True)
@@ -225,6 +231,33 @@ class TeleVuer:
                 self.head_pose_shared[:] = event.value["camera"]["matrix"]
         except:
             pass
+
+    async def on_body_move(self, event, session, fps=60):
+        body = event.value.get("body", [])
+        if len(body) != 33 * 16:
+            return
+        body_array = np.asarray(body, dtype=np.float64)
+        if not np.all(np.isfinite(body_array)) or not np.any(body_array):
+            return
+        with self.body_pose_shared.get_lock():
+            self.body_pose_shared[:] = body_array
+        with self.body_tracking_ready_shared.get_lock():
+            self.body_tracking_ready_shared.value = True
+
+    def _upsert_body_tracking(self, session):
+        if self.use_body_tracking:
+            session.upsert(
+                Body(
+                    stream=True,
+                    key="body_tracking",
+                    leftHand=False,
+                    rightHand=False,
+                    fps=min(60, max(15, int(self.display_fps))),
+                    showBody=False,
+                    showFrame=False,
+                ),
+                to="bgChildren",
+            )
 
     async def on_controller_move(self, event, session, fps=60):
         """https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html"""
@@ -318,6 +351,7 @@ class TeleVuer:
     
     ## immersive MODE
     async def main_image_binocular_zmq(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -373,6 +407,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -413,6 +448,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -450,6 +486,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -487,6 +524,7 @@ class TeleVuer:
 
     ## ego MODE
     async def main_image_binocular_zmq_ego(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -542,6 +580,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq_ego(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -582,6 +621,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc_ego(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -619,6 +659,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc_ego(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -656,6 +697,7 @@ class TeleVuer:
 
     ## pass-through MODE
     async def main_pass_through(self, session):
+        self._upsert_body_tracking(session)
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -723,6 +765,22 @@ class TeleVuer:
         """np.ndarray, shape (25, 3, 3), right hand 25 landmarks' orientations (flattened 3x3 matrices, column-major)."""
         with self.right_hand_orientation_shared.get_lock():
             return np.array(self.right_hand_orientation_shared[:]).reshape(25, 9).reshape(25, 3, 3, order="F")
+
+    @property
+    def body_poses(self):
+        """np.ndarray, shape (33, 4, 4), WebXR body joint poses in OpenXR coordinates."""
+        if not self.use_body_tracking:
+            return None
+        with self.body_pose_shared.get_lock():
+            flat = np.array(self.body_pose_shared[:]).reshape(33, 16)
+        return np.stack([joint.reshape(4, 4, order="F") for joint in flat])
+
+    @property
+    def body_tracking_ready(self):
+        if not self.use_body_tracking:
+            return False
+        with self.body_tracking_ready_shared.get_lock():
+            return self.body_tracking_ready_shared.value
 
     @property
     def left_hand_pinch(self):
