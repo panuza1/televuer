@@ -434,19 +434,19 @@ class TeleVuer:
                 to="bgChildren",
             )
 
+        session.upsert(
+            WebRTCStereoVideoPlane(
+                src=self.webrtc_url,
+                iceServer=None,
+                iceServers=[],
+                key="video-quad",
+                aspect=self.aspect_ratio,
+                height=7,
+                layout="stereo-left-right"
+            ),
+            to="bgChildren",
+        )
         while True:
-            session.upsert(
-                WebRTCStereoVideoPlane(
-                    src=self.webrtc_url,
-                    iceServer=None,
-                    iceServers=[], 
-                    key="video-quad",
-                    aspect=self.aspect_ratio,
-                    height = 7,
-                    layout="stereo-left-right"
-                ),
-                to="bgChildren",
-            )
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc(self, session):
@@ -471,18 +471,18 @@ class TeleVuer:
                 to="bgChildren",
             )
 
+        session.upsert(
+            WebRTCVideoPlane(
+                src=self.webrtc_url,
+                iceServer=None,
+                iceServers=[],
+                key="video-quad",
+                aspect=self.aspect_ratio,
+                height=7,
+            ),
+            to="bgChildren",
+        )
         while True:
-            session.upsert(
-                WebRTCVideoPlane(
-                    src=self.webrtc_url,
-                    iceServer=None,
-                    iceServers=[],
-                    key="video-quad",
-                    aspect=self.aspect_ratio,
-                    height = 7,
-                ),
-                to="bgChildren",
-            )
             await asyncio.sleep(1.0 / self.display_fps)
 
     ## ego MODE
@@ -603,19 +603,19 @@ class TeleVuer:
                 to="bgChildren",
             )
 
+        session.upsert(
+            WebRTCStereoVideoPlane(
+                src=self.webrtc_url,
+                iceServer=None,
+                iceServers=[],
+                key="video-quad",
+                aspect=self.aspect_ratio,
+                height=3,
+                layout="stereo-left-right"
+            ),
+            to="bgChildren",
+        )
         while True:
-            session.upsert(
-                WebRTCStereoVideoPlane(
-                    src=self.webrtc_url,
-                    iceServer=None,
-                    iceServers=[], 
-                    key="video-quad",
-                    aspect=self.aspect_ratio,
-                    height=3,
-                    layout="stereo-left-right"
-                ),
-                to="bgChildren",
-            )
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc_ego(self, session):
@@ -640,18 +640,18 @@ class TeleVuer:
                 to="bgChildren",
             )
 
+        session.upsert(
+            WebRTCVideoPlane(
+                src=self.webrtc_url,
+                iceServer=None,
+                iceServers=[],
+                key="video-quad",
+                aspect=self.aspect_ratio,
+                height=3,
+            ),
+            to="bgChildren",
+        )
         while True:
-            session.upsert(
-                WebRTCVideoPlane(
-                    src=self.webrtc_url,
-                    iceServer=None,
-                    iceServers=[],
-                    key="video-quad",
-                    aspect=self.aspect_ratio,
-                    height=3,
-                ),
-                to="bgChildren",
-            )
             await asyncio.sleep(1.0 / self.display_fps)
 
     ## pass-through MODE
