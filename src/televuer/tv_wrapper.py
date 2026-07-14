@@ -223,13 +223,15 @@ class TeleData:
     right_ctrl_bButton: bool = False       # True if B button is pressed
     right_ctrl_thumbstick: bool = False    # True if thumbstick button is pressed
     right_ctrl_thumbstickValue: np.ndarray = field(default_factory=lambda: np.zeros(2)) # 2D vector (x, y), normalized
+    body_tracking_ready: bool = False
+    body_poses: np.ndarray = field(default_factory=lambda: np.zeros((0, 4, 4)))
 
 
 class TeleVuerWrapper:
     def __init__(self, use_hand_tracking: bool, binocular: bool=True, img_shape: tuple=(480, 1280), display_fps: float=30.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
                        cert_file: str=None, key_file: str=None, return_hand_rot_data: bool=False,
-                       arm_reference_mode: Literal["head_position", "head_yaw"]="head_yaw"):
+                       arm_reference_mode: Literal["head_position", "head_yaw"]="head_yaw", use_body_tracking: bool=False):
         """
         TeleVuerWrapper is a wrapper for the TeleVuer class, which handles XR device's data suit for robot control.
         It initializes the TeleVuer instance with the specified parameters and provides a method to get motion state data.
