@@ -6,14 +6,24 @@ import asyncio
 import threading
 import cv2
 import os
+import time
 from pathlib import Path
 from typing import Literal
+
+try:
+    from vuer.schemas import Body
+except ImportError:
+    Body = None
+
+from .body_joints import REQUIRED_BODY_JOINT_KEYS, UPPER_BODY_JOINT_KEYS
+
+NUM_UPPER_BODY_JOINTS = len(UPPER_BODY_JOINT_KEYS)
 
 
 class TeleVuer:
     def __init__(self, use_hand_tracking: bool, binocular: bool=True, img_shape: tuple=None, display_fps: float=30.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
-                       cert_file: str=None, key_file: str=None):
+                       cert_file: str=None, key_file: str=None, use_body_tracking: bool=False):
         """
         TeleVuer class for OpenXR-based XR teleoperate applications.
         This class handles the communication with the Vuer server and manages image and pose data.
@@ -53,6 +63,12 @@ class TeleVuer:
 
         """
         self.use_hand_tracking = use_hand_tracking
+        self.use_body_tracking = use_body_tracking
+        if self.use_body_tracking and Body is None:
+            raise ImportError(
+                "[TeleVuer] Body tracking requires vuer>=0.0.71 with the Body schema. "
+                "Upgrade vuer or disable use_body_tracking."
+            )
         self.binocular = binocular
         if img_shape is None:
             raise ValueError("[TeleVuer] img_shape must be provided.")
@@ -94,6 +110,8 @@ class TeleVuer:
             self.vuer.add_handler("HAND_MOVE")(self.on_hand_move)
         else:
             self.vuer.add_handler("CONTROLLER_MOVE")(self.on_controller_move)
+        if self.use_body_tracking:
+            self.vuer.add_handler("BODY_TRACKING_MOVE")(self.on_body_tracking_move)
 
         self.display_mode = display_mode
         self.zmq = zmq
@@ -139,6 +157,10 @@ class TeleVuer:
         self.left_arm_pose_shared = Array('d', 16, lock=True)
         self.right_arm_pose_shared = Array('d', 16, lock=True)
         self.motion_data_ready_shared = Value('b', False, lock=True)
+        self.arm_pose_updated_at_shared = Value('d', 0.0, lock=True)
+        if self.use_body_tracking:
+            self.body_poses_shared = Array('d', NUM_UPPER_BODY_JOINTS * 16, lock=True)
+            self.body_tracking_ready_shared = Value('b', False, lock=True)
         if self.use_hand_tracking:
             self.left_hand_position_shared = Array('d', 75, lock=True)
             self.right_hand_position_shared = Array('d', 75, lock=True)
@@ -219,6 +241,68 @@ class TeleVuer:
             except:
                 pass
 
+    def _mark_arm_pose_updated(self):
+        with self.arm_pose_updated_at_shared.get_lock():
+            self.arm_pose_updated_at_shared.value = time.time()
+
+    async def _upsert_input_tracking(self, session):
+        if self.use_hand_tracking:
+            session.upsert(
+                Hands(
+                    stream=True,
+                    key="hands",
+                    hideLeft=True,
+                    hideRight=True
+                ),
+                to="bgChildren",
+            )
+        else:
+            session.upsert(
+                MotionControllers(
+                    stream=True,
+                    key="motionControllers",
+                    left=True,
+                    right=True,
+                ),
+                to="bgChildren",
+            )
+        if self.use_body_tracking:
+            session.upsert(
+                Body(
+                    key="body_tracking",
+                    stream=True,
+                    fps=30,
+                    hideIndicate=True,
+                    showFrame=False,
+                ),
+                to="bgChildren",
+            )
+
+    async def on_body_tracking_move(self, event, session, fps=60):
+        try:
+            joints = event.value
+            if not joints:
+                return
+            if not all(key in joints for key in REQUIRED_BODY_JOINT_KEYS):
+                return
+
+            poses = np.zeros((NUM_UPPER_BODY_JOINTS, 4, 4), dtype=np.float64)
+            for idx, joint_name in enumerate(UPPER_BODY_JOINT_KEYS):
+                joint_data = joints.get(joint_name)
+                if not joint_data:
+                    continue
+                matrix = joint_data.get("matrix")
+                if matrix is None or len(matrix) != 16:
+                    continue
+                poses[idx] = np.asarray(matrix, dtype=np.float64).reshape(4, 4, order="F")
+
+            with self.body_poses_shared.get_lock():
+                self.body_poses_shared[:] = poses.reshape(-1)
+            with self.body_tracking_ready_shared.get_lock():
+                self.body_tracking_ready_shared.value = True
+        except:
+            pass
+
     async def on_cam_move(self, event, session, fps=60):
         try:
             with self.head_pose_shared.get_lock():
@@ -264,6 +348,7 @@ class TeleVuer:
             extract_controllers(right_controller, "right")
             with self.motion_data_ready_shared.get_lock():
                 self.motion_data_ready_shared.value = True
+            self._mark_arm_pose_updated()
         except:
             pass
 
@@ -312,32 +397,13 @@ class TeleVuer:
             extract_hands(right_hand, "right")
             with self.motion_data_ready_shared.get_lock():
                 self.motion_data_ready_shared.value = True
-
+            self._mark_arm_pose_updated()
         except:
             pass
     
     ## immersive MODE
     async def main_image_binocular_zmq(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True,
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
         while True:
             session.upsert(
                 [
@@ -373,26 +439,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True, 
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
 
         while True:
             session.upsert(
@@ -413,26 +460,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True, 
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
 
         while True:
             session.upsert(
@@ -450,26 +478,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True, 
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
 
         while True:
             session.upsert(
@@ -487,26 +496,7 @@ class TeleVuer:
 
     ## ego MODE
     async def main_image_binocular_zmq_ego(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True,
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
         while True:
             session.upsert(
                 [
@@ -542,26 +532,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq_ego(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True, 
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
 
         while True:
             session.upsert(
@@ -582,26 +553,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc_ego(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True, 
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
 
         while True:
             session.upsert(
@@ -619,26 +571,7 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc_ego(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True, 
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
 
         while True:
             session.upsert(
@@ -656,26 +589,7 @@ class TeleVuer:
 
     ## pass-through MODE
     async def main_pass_through(self, session):
-        if self.use_hand_tracking:
-            session.upsert(
-                Hands(
-                    stream=True,
-                    key="hands",
-                    hideLeft=True,
-                    hideRight=True
-                ),
-                to="bgChildren",
-            )
-        else:
-            session.upsert(
-                MotionControllers(
-                    stream=True, 
-                    key="motionControllers",
-                    left=True,
-                    right=True,
-                ),
-                to="bgChildren",
-            )
+        await self._upsert_input_tracking(session)
 
         while True:
             await asyncio.sleep(1.0 / self.display_fps)
@@ -874,3 +788,27 @@ class TeleVuer:
         """bool, whether at least one hand or controller motion data event has been received."""
         with self.motion_data_ready_shared.get_lock():
             return self.motion_data_ready_shared.value
+
+    @property
+    def arm_pose_updated_at(self):
+        """float, time.time() when the last hand/controller arm pose event arrived."""
+        with self.arm_pose_updated_at_shared.get_lock():
+            return self.arm_pose_updated_at_shared.value
+
+    @property
+    def body_tracking_ready(self):
+        """bool, whether a Quest body-tracking frame with required torso joints has arrived."""
+        if not self.use_body_tracking:
+            return False
+        with self.body_tracking_ready_shared.get_lock():
+            return self.body_tracking_ready_shared.value
+
+    @property
+    def body_poses(self):
+        """np.ndarray, shape (33, 4, 4), WebXR upper-body joint transforms (column-major)."""
+        if not self.use_body_tracking:
+            return np.zeros((0, 4, 4), dtype=np.float64)
+        with self.body_poses_shared.get_lock():
+            return np.array(self.body_poses_shared[:], dtype=np.float64).reshape(
+                NUM_UPPER_BODY_JOINTS, 4, 4
+            )

@@ -1,0 +1,40 @@
+"""WebXR body joint names used by QuestUpperBodyRetargeter (first 33 joints)."""
+
+# https://immersive-web.github.io/body-tracking/#xrbodyjoint-enum
+UPPER_BODY_JOINT_KEYS = (
+    "hips",
+    "spine-lower",
+    "spine-middle",
+    "spine-upper",
+    "chest",
+    "neck",
+    "head",
+    "left-shoulder",
+    "left-scapula",
+    "left-arm-upper",
+    "left-arm-lower",
+    "left-hand-wrist-twist",
+    "right-shoulder",
+    "right-scapula",
+    "right-arm-upper",
+    "right-arm-lower",
+    "right-hand-wrist-twist",
+    "left-hand-palm",
+    "left-hand-wrist",
+    "left-hand-thumb-metacarpal",
+    "left-hand-thumb-phalanx-proximal",
+    "left-hand-thumb-phalanx-distal",
+    "left-hand-thumb-tip",
+    "left-hand-index-metacarpal",
+    "left-hand-index-phalanx-proximal",
+    "left-hand-index-phalanx-intermediate",
+    "left-hand-index-phalanx-distal",
+    "left-hand-index-tip",
+    "left-hand-middle-phalanx-metacarpal",
+    "left-hand-middle-phalanx-proximal",
+    "left-hand-middle-phalanx-intermediate",
+    "left-hand-middle-phalanx-distal",
+    "left-hand-middle-tip",
+)
+
+REQUIRED_BODY_JOINT_KEYS = ("hips", "chest", "left-shoulder", "right-shoulder")

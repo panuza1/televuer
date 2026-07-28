@@ -225,10 +225,13 @@ class TeleData:
     right_ctrl_thumbstickValue: np.ndarray = field(default_factory=lambda: np.zeros(2)) # 2D vector (x, y), normalized
     body_tracking_ready: bool = False
     body_poses: np.ndarray = field(default_factory=lambda: np.zeros((0, 4, 4)))
+    raw_left_arm_pose: np.ndarray = field(default_factory=lambda: np.eye(4))
+    raw_right_arm_pose: np.ndarray = field(default_factory=lambda: np.eye(4))
+    arm_pose_updated_at: float = 0.0
 
 
 class TeleVuerWrapper:
-    def __init__(self, use_hand_tracking: bool, binocular: bool=True, img_shape: tuple=(480, 1280), display_fps: float=30.0,
+    def __init__(self, use_hand_tracking: bool, binocular: bool=True, img_shape: tuple=(480, 1280), display_fps: float=15.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
                        cert_file: str=None, key_file: str=None, return_hand_rot_data: bool=False,
                        arm_reference_mode: Literal["head_position", "head_yaw"]="head_yaw", use_body_tracking: bool=False):
@@ -239,7 +242,7 @@ class TeleVuerWrapper:
         :param use_hand_tracking: bool, whether to use hand tracking or controller tracking.
         :param binocular: bool, whether the application is binocular (stereoscopic) or monocular.
         :param img_shape: tuple, shape of the head image (height, width).
-        :param display_fps: float, target frames per second for display updates (default: 30.0).
+        :param display_fps: float, target frames per second for display updates (default: 15.0).
 
         :param display_mode: str, controls the VR viewing mode. Options are "immersive", "pass-through", and "ego".
         :param zmq: bool, whether to use ZMQ for image transmission.
@@ -250,8 +253,7 @@ class TeleVuerWrapper:
         :param arm_reference_mode: str, controls how wrist poses are expressed for IK.
             * "head_position": transfer from WORLD to HEAD with translation adjustment only.
             * "head_yaw": default mode; transfer from WORLD to HEAD with R_Brobot_world_head_yaw^T, ignoring pitch/roll.
-
-        Note:
+        :param use_body_tracking: bool, whether to subscribe to Quest WebXR body tracking for torso retargeting.
 
         - display_mode controls what the VR headset displays:
             * "immersive": fully immersive mode; VR shows the robot's first-person view (zmq or webrtc must be enabled).
@@ -277,11 +279,12 @@ class TeleVuerWrapper:
         if arm_reference_mode not in ("head_position", "head_yaw"):
             raise ValueError(f"[TeleVuerWrapper] Unknown arm_reference_mode: {arm_reference_mode}")
         self.use_hand_tracking = use_hand_tracking
+        self.use_body_tracking = use_body_tracking
         self.return_hand_rot_data = return_hand_rot_data
         self.arm_reference_mode = arm_reference_mode
         self.tvuer = TeleVuer(use_hand_tracking=use_hand_tracking, binocular=binocular, img_shape=img_shape, display_fps=display_fps,
                               display_mode=display_mode, zmq=zmq, webrtc=webrtc, webrtc_url=webrtc_url, 
-                              cert_file=cert_file, key_file=key_file)
+                              cert_file=cert_file, key_file=key_file, use_body_tracking=use_body_tracking)
         
     def get_tele_data(self):
         """
@@ -406,6 +409,11 @@ class TeleVuerWrapper:
                 left_hand_rot=left_Brobot_arm_hand_rot,
                 right_hand_rot=right_Brobot_arm_hand_rot,
                 motion_data_ready=self.tvuer.motion_data_ready,
+                raw_left_arm_pose=self.tvuer.left_arm_pose.copy(),
+                raw_right_arm_pose=self.tvuer.right_arm_pose.copy(),
+                arm_pose_updated_at=self.tvuer.arm_pose_updated_at,
+                body_tracking_ready=self.tvuer.body_tracking_ready if self.use_body_tracking else False,
+                body_poses=self.tvuer.body_poses.copy() if self.use_body_tracking else np.zeros((0, 4, 4)),
                 left_hand_pinch=self.tvuer.left_hand_pinch,
                 left_hand_pinchValue=self.tvuer.left_hand_pinchValue * 100.0,
                 left_hand_squeeze=self.tvuer.left_hand_squeeze,
@@ -437,6 +445,11 @@ class TeleVuerWrapper:
                 left_wrist_pose=left_IPunitree_Brobot_waist_arm,
                 right_wrist_pose=right_IPunitree_Brobot_waist_arm,
                 motion_data_ready=self.tvuer.motion_data_ready,
+                raw_left_arm_pose=self.tvuer.left_arm_pose.copy(),
+                raw_right_arm_pose=self.tvuer.right_arm_pose.copy(),
+                arm_pose_updated_at=self.tvuer.arm_pose_updated_at,
+                body_tracking_ready=self.tvuer.body_tracking_ready if self.use_body_tracking else False,
+                body_poses=self.tvuer.body_poses.copy() if self.use_body_tracking else np.zeros((0, 4, 4)),
                 left_ctrl_trigger=self.tvuer.left_ctrl_trigger,
                 left_ctrl_triggerValue=10.0 - self.tvuer.left_ctrl_triggerValue * 10,
                 left_ctrl_squeeze=self.tvuer.left_ctrl_squeeze,
