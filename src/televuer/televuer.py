@@ -66,7 +66,7 @@ class TeleVuer:
         self.use_body_tracking = use_body_tracking
         if self.use_body_tracking and Body is None:
             raise ImportError(
-                "[TeleVuer] Body tracking requires vuer>=0.0.71 with the Body schema. "
+                "[TeleVuer] Body tracking requires vuer>=0.0.72 with the Body schema. "
                 "Upgrade vuer or disable use_body_tracking."
             )
         self.binocular = binocular
@@ -111,7 +111,7 @@ class TeleVuer:
         else:
             self.vuer.add_handler("CONTROLLER_MOVE")(self.on_controller_move)
         if self.use_body_tracking:
-            self.vuer.add_handler("BODY_TRACKING_MOVE")(self.on_body_tracking_move)
+            self.vuer.add_handler("BODY_MOVE")(self.on_body_tracking_move)
 
         self.display_mode = display_mode
         self.zmq = zmq
@@ -272,7 +272,7 @@ class TeleVuer:
                     key="body_tracking",
                     stream=True,
                     fps=30,
-                    hideIndicate=True,
+                    showBody=False,
                     showFrame=False,
                 ),
                 to="bgChildren",
@@ -280,21 +280,21 @@ class TeleVuer:
 
     async def on_body_tracking_move(self, event, session, fps=60):
         try:
-            joints = event.value
-            if not joints:
+            payload = event.value
+            if not payload:
                 return
-            if not all(key in joints for key in REQUIRED_BODY_JOINT_KEYS):
+            body_flat = payload.get("body")
+            if body_flat is None or len(body_flat) < NUM_UPPER_BODY_JOINTS * 16:
                 return
 
-            poses = np.zeros((NUM_UPPER_BODY_JOINTS, 4, 4), dtype=np.float64)
-            for idx, joint_name in enumerate(UPPER_BODY_JOINT_KEYS):
-                joint_data = joints.get(joint_name)
-                if not joint_data:
-                    continue
-                matrix = joint_data.get("matrix")
-                if matrix is None or len(matrix) != 16:
-                    continue
-                poses[idx] = np.asarray(matrix, dtype=np.float64).reshape(4, 4, order="F")
+            poses = np.array([
+                np.asarray(body_flat[i * 16:(i + 1) * 16], dtype=np.float64).reshape(4, 4, order="F")
+                for i in range(NUM_UPPER_BODY_JOINTS)
+            ])
+
+            required_indices = [UPPER_BODY_JOINT_KEYS.index(k) for k in REQUIRED_BODY_JOINT_KEYS]
+            if not np.isfinite(poses[required_indices]).all():
+                return
 
             with self.body_poses_shared.get_lock():
                 self.body_poses_shared[:] = poses.reshape(-1)
