@@ -23,6 +23,7 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
         tvuer.left_arm_pose_shared = Array('d', [1.0] * 16, lock=True)
         tvuer.right_arm_pose_shared = Array('d', [2.0] * 16, lock=True)
         tvuer.motion_data_ready_shared = Value('b', False, lock=True)
+        tvuer.left_controller_data_updated_at_shared = Value('d', 0.0, lock=True)
         tvuer.controller_data_updated_at_shared = Value('d', 0.0, lock=True)
         for prefix in ("left", "right"):
             for name in ("trigger", "squeeze", "thumbstick", "aButton", "bButton"):
@@ -32,12 +33,10 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
             setattr(tvuer, f"{prefix}_ctrl_thumbstickValue_shared", Array('d', 2, lock=True))
         return tvuer
 
-    async def test_controller_event_does_not_replace_hand_arm_pose(self):
+    async def test_right_only_controller_event_does_not_replace_hand_arm_pose(self):
         tvuer = self.hybrid_tvuer()
         event = type("Event", (), {"value": {
-            "left": [3.0] * 16,
             "right": [4.0] * 16,
-            "leftState": {"thumbstickValue": [-0.25, -0.75], "thumbstick": True},
             "rightState": {"thumbstickValue": [0.5, 0.0], "aButton": True},
         }})()
 
@@ -46,10 +45,25 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(tvuer.left_arm_pose_shared), [1.0] * 16)
         self.assertEqual(list(tvuer.right_arm_pose_shared), [2.0] * 16)
         self.assertFalse(tvuer.motion_data_ready_shared.value)
-        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [-0.25, -0.75])
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [0.0, 0.0])
         np.testing.assert_allclose(tvuer.right_ctrl_thumbstickValue, [0.5, 0.0])
         self.assertTrue(tvuer.right_ctrl_aButton)
+        self.assertEqual(tvuer.left_controller_data_updated_at, 0.0)
         self.assertGreater(tvuer.controller_data_updated_at, 0.0)
+        self.assertEqual(tvuer.right_controller_data_updated_at, tvuer.controller_data_updated_at)
+
+    async def test_left_only_controller_event_refreshes_only_left_freshness(self):
+        tvuer = self.hybrid_tvuer()
+        event = type("Event", (), {"value": {
+            "leftState": {"thumbstickValue": [-0.25, -0.75]},
+        }})()
+
+        await tvuer.on_controller_move(event, None)
+
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [-0.25, -0.75])
+        self.assertGreater(tvuer.left_controller_data_updated_at, 0.0)
+        self.assertEqual(tvuer.right_controller_data_updated_at, 0.0)
+        self.assertEqual(tvuer.controller_data_updated_at, 0.0)
 
     async def test_hybrid_scene_mounts_hands_and_controllers(self):
         tvuer = TeleVuer.__new__(TeleVuer)
@@ -74,6 +88,8 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
             left_hand_positions=np.zeros((25, 3)), right_hand_positions=np.zeros((25, 3)),
             motion_data_ready=True, body_tracking_ready=False,
             controller_data_updated_at=123.0,
+            left_controller_data_updated_at=122.0,
+            right_controller_data_updated_at=123.0,
             left_hand_pinch=False, left_hand_pinchValue=0.0,
             left_hand_squeeze=False, left_hand_squeezeValue=0.0,
             right_hand_pinch=False, right_hand_pinchValue=0.0,
@@ -100,6 +116,8 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
 
         np.testing.assert_allclose(tele_data.left_ctrl_thumbstickValue, [-0.25, -0.75])
         np.testing.assert_allclose(tele_data.right_ctrl_thumbstickValue, [0.5, 0.0])
+        self.assertEqual(tele_data.left_controller_data_updated_at, 122.0)
+        self.assertEqual(tele_data.right_controller_data_updated_at, 123.0)
         self.assertEqual(tele_data.controller_data_updated_at, 123.0)
 
 

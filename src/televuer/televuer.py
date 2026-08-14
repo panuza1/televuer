@@ -165,6 +165,7 @@ class TeleVuer:
             self.right_hand_squeeze_shared = Value('b', False, lock=True)
             self.right_hand_squeezeValue_shared = Value('d', 0.0, lock=True)
         if self.use_controller_input:
+            self.left_controller_data_updated_at_shared = Value('d', 0.0, lock=True)
             self.controller_data_updated_at_shared = Value('d', 0.0, lock=True)
             self.left_ctrl_trigger_shared = Value('b', False, lock=True)
             self.left_ctrl_triggerValue_shared = Value('d', 0.0, lock=True)
@@ -274,8 +275,8 @@ class TeleVuer:
                 with self.right_arm_pose_shared.get_lock():
                     self.right_arm_pose_shared[:] = event.value["right"]
             # ControllerState
-            left_controller = event.value["leftState"]
-            right_controller = event.value["rightState"]
+            left_controller = event.value.get("leftState")
+            right_controller = event.value.get("rightState")
 
             def extract_controllers(controllerState, prefix):
                 # trigger
@@ -299,11 +300,15 @@ class TeleVuer:
                 with getattr(self, f"{prefix}_ctrl_bButton_shared").get_lock():
                     getattr(self, f"{prefix}_ctrl_bButton_shared").value = bool(controllerState.get("bButton", False))
 
-            extract_controllers(left_controller, "left")
-            extract_controllers(right_controller, "right")
-            with self.controller_data_updated_at_shared.get_lock():
-                self.controller_data_updated_at_shared.value = time.monotonic()
-            if not self.use_hand_tracking:
+            if left_controller is not None:
+                extract_controllers(left_controller, "left")
+                with self.left_controller_data_updated_at_shared.get_lock():
+                    self.left_controller_data_updated_at_shared.value = time.monotonic()
+            if right_controller is not None:
+                extract_controllers(right_controller, "right")
+                with self.controller_data_updated_at_shared.get_lock():
+                    self.controller_data_updated_at_shared.value = time.monotonic()
+            if not self.use_hand_tracking and right_controller is not None:
                 with self.motion_data_ready_shared.get_lock():
                     self.motion_data_ready_shared.value = True
         except:
@@ -840,6 +845,15 @@ class TeleVuer:
             return self.right_hand_squeezeValue_shared.value
 
     # ==================== Controller Data ====================
+    @property
+    def left_controller_data_updated_at(self):
+        with self.left_controller_data_updated_at_shared.get_lock():
+            return self.left_controller_data_updated_at_shared.value
+
+    @property
+    def right_controller_data_updated_at(self):
+        return self.controller_data_updated_at
+
     @property
     def controller_data_updated_at(self):
         with self.controller_data_updated_at_shared.get_lock():

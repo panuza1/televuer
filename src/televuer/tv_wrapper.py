@@ -198,7 +198,9 @@ class TeleData:
     body_poses: np.ndarray = None          # (33,4,4) body joint poses in Robot coordinates
     body_tracking_ready: bool = False
     # controller tracking
-    controller_data_updated_at: float = 0.0
+    controller_data_updated_at: float = 0.0  # backwards-compatible right controller timestamp
+    left_controller_data_updated_at: float = 0.0
+    right_controller_data_updated_at: float = 0.0
     # https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html
     # https://immersive-web.github.io/webxr-gamepads-module/
     left_ctrl_trigger: bool = False        # True if trigger is actively pressed
@@ -314,6 +316,8 @@ class TeleVuerWrapper:
         if self.use_controller_input:
             controller_data = dict(
                 controller_data_updated_at=self.tvuer.controller_data_updated_at,
+                left_controller_data_updated_at=self.tvuer.left_controller_data_updated_at,
+                right_controller_data_updated_at=self.tvuer.right_controller_data_updated_at,
                 left_ctrl_trigger=self.tvuer.left_ctrl_trigger,
                 left_ctrl_triggerValue=10.0 - self.tvuer.left_ctrl_triggerValue * 10,
                 left_ctrl_squeeze=self.tvuer.left_ctrl_squeeze,
