@@ -3,6 +3,7 @@ from vuer.schemas import Body, ImageBackground, Hands, MotionControllers, WebRTC
 from multiprocessing import Value, Array, Process, shared_memory
 import numpy as np
 import asyncio
+import time
 import threading
 import cv2
 import os
@@ -11,7 +12,8 @@ from typing import Literal
 
 
 class TeleVuer:
-    def __init__(self, use_hand_tracking: bool, use_body_tracking: bool=False, binocular: bool=True, img_shape: tuple=None, display_fps: float=30.0,
+    def __init__(self, use_hand_tracking: bool, use_body_tracking: bool=False, use_controller_input: bool=False,
+                       binocular: bool=True, img_shape: tuple=None, display_fps: float=30.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
                        cert_file: str=None, key_file: str=None):
         """
@@ -19,6 +21,7 @@ class TeleVuer:
         This class handles the communication with the Vuer server and manages image and pose data.
 
         :param use_hand_tracking: bool, whether to use hand tracking or controller tracking.
+        :param use_controller_input: bool, also stream controller buttons and axes while hand tracking.
         :param binocular: bool, whether the application is binocular (stereoscopic) or monocular.
         :param img_shape: tuple, shape of the head image (height, width).
         :param display_fps: float, target frames per second for display updates (default: 30.0).
@@ -54,6 +57,7 @@ class TeleVuer:
         """
         self.use_hand_tracking = use_hand_tracking
         self.use_body_tracking = use_body_tracking
+        self.use_controller_input = use_controller_input or not use_hand_tracking
         self.binocular = binocular
         if img_shape is None:
             raise ValueError("[TeleVuer] img_shape must be provided.")
@@ -93,7 +97,7 @@ class TeleVuer:
         self.vuer.add_handler("CAMERA_MOVE")(self.on_cam_move)
         if self.use_hand_tracking:
             self.vuer.add_handler("HAND_MOVE")(self.on_hand_move)
-        else:
+        if self.use_controller_input:
             self.vuer.add_handler("CONTROLLER_MOVE")(self.on_controller_move)
         if self.use_body_tracking:
             self.vuer.add_handler("BODY_MOVE")(self.on_body_move)
@@ -160,7 +164,8 @@ class TeleVuer:
             self.right_hand_pinchValue_shared = Value('d', 0.0, lock=True)
             self.right_hand_squeeze_shared = Value('b', False, lock=True)
             self.right_hand_squeezeValue_shared = Value('d', 0.0, lock=True)
-        else:
+        if self.use_controller_input:
+            self.controller_data_updated_at_shared = Value('d', 0.0, lock=True)
             self.left_ctrl_trigger_shared = Value('b', False, lock=True)
             self.left_ctrl_triggerValue_shared = Value('d', 0.0, lock=True)
             self.left_ctrl_squeeze_shared = Value('b', False, lock=True)
@@ -262,11 +267,12 @@ class TeleVuer:
     async def on_controller_move(self, event, session, fps=60):
         """https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html"""
         try:
-            # ControllerData
-            with self.left_arm_pose_shared.get_lock():
-                self.left_arm_pose_shared[:] = event.value["left"]
-            with self.right_arm_pose_shared.get_lock():
-                self.right_arm_pose_shared[:] = event.value["right"]
+            # Hand tracking remains the only arm-pose source in hybrid mode.
+            if not self.use_hand_tracking:
+                with self.left_arm_pose_shared.get_lock():
+                    self.left_arm_pose_shared[:] = event.value["left"]
+                with self.right_arm_pose_shared.get_lock():
+                    self.right_arm_pose_shared[:] = event.value["right"]
             # ControllerState
             left_controller = event.value["leftState"]
             right_controller = event.value["rightState"]
@@ -295,8 +301,11 @@ class TeleVuer:
 
             extract_controllers(left_controller, "left")
             extract_controllers(right_controller, "right")
-            with self.motion_data_ready_shared.get_lock():
-                self.motion_data_ready_shared.value = True
+            with self.controller_data_updated_at_shared.get_lock():
+                self.controller_data_updated_at_shared.value = time.monotonic()
+            if not self.use_hand_tracking:
+                with self.motion_data_ready_shared.get_lock():
+                    self.motion_data_ready_shared.value = True
         except:
             pass
 
@@ -362,7 +371,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True,
@@ -418,7 +427,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True, 
@@ -459,7 +468,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True, 
@@ -497,7 +506,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True, 
@@ -535,7 +544,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True,
@@ -591,7 +600,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True, 
@@ -632,7 +641,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True, 
@@ -670,7 +679,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True, 
@@ -708,7 +717,7 @@ class TeleVuer:
                 ),
                 to="bgChildren",
             )
-        else:
+        if self.use_controller_input:
             session.upsert(
                 MotionControllers(
                     stream=True, 
@@ -831,6 +840,11 @@ class TeleVuer:
             return self.right_hand_squeezeValue_shared.value
 
     # ==================== Controller Data ====================
+    @property
+    def controller_data_updated_at(self):
+        with self.controller_data_updated_at_shared.get_lock():
+            return self.controller_data_updated_at_shared.value
+
     @property
     def left_ctrl_trigger(self):
         """bool, left controller trigger pressed or not."""

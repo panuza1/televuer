@@ -198,6 +198,7 @@ class TeleData:
     body_poses: np.ndarray = None          # (33,4,4) body joint poses in Robot coordinates
     body_tracking_ready: bool = False
     # controller tracking
+    controller_data_updated_at: float = 0.0
     # https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html
     # https://immersive-web.github.io/webxr-gamepads-module/
     left_ctrl_trigger: bool = False        # True if trigger is actively pressed
@@ -228,7 +229,8 @@ class TeleData:
 
 
 class TeleVuerWrapper:
-    def __init__(self, use_hand_tracking: bool, use_body_tracking: bool=False, binocular: bool=True, img_shape: tuple=(480, 1280), display_fps: float=30.0,
+    def __init__(self, use_hand_tracking: bool, use_body_tracking: bool=False, use_controller_input: bool=False,
+                       binocular: bool=True, img_shape: tuple=(480, 1280), display_fps: float=30.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
                        cert_file: str=None, key_file: str=None, return_hand_rot_data: bool=False,
                        arm_reference_mode: Literal["head_position", "head_yaw"]="head_yaw"):
@@ -237,6 +239,7 @@ class TeleVuerWrapper:
         It initializes the TeleVuer instance with the specified parameters and provides a method to get motion state data.
 
         :param use_hand_tracking: bool, whether to use hand tracking or controller tracking.
+        :param use_controller_input: bool, also return controller buttons and axes while hand tracking.
         :param binocular: bool, whether the application is binocular (stereoscopic) or monocular.
         :param img_shape: tuple, shape of the head image (height, width).
         :param display_fps: float, target frames per second for display updates (default: 30.0).
@@ -278,9 +281,11 @@ class TeleVuerWrapper:
             raise ValueError(f"[TeleVuerWrapper] Unknown arm_reference_mode: {arm_reference_mode}")
         self.use_hand_tracking = use_hand_tracking
         self.use_body_tracking = use_body_tracking
+        self.use_controller_input = use_controller_input or not use_hand_tracking
         self.return_hand_rot_data = return_hand_rot_data
         self.arm_reference_mode = arm_reference_mode
         self.tvuer = TeleVuer(use_hand_tracking=use_hand_tracking, use_body_tracking=use_body_tracking,
+                              use_controller_input=self.use_controller_input,
                               binocular=binocular, img_shape=img_shape, display_fps=display_fps,
                               display_mode=display_mode, zmq=zmq, webrtc=webrtc, webrtc_url=webrtc_url, 
                               cert_file=cert_file, key_file=key_file)
@@ -305,6 +310,27 @@ class TeleVuerWrapper:
 
         # TeleVuer (Vuer) obtains all raw data under the (basis) OpenXR Convention.
         Bxr_world_head, head_pose_is_valid = safe_mat_update(CONST_HEAD_POSE, self.tvuer.head_pose)
+        controller_data = {}
+        if self.use_controller_input:
+            controller_data = dict(
+                controller_data_updated_at=self.tvuer.controller_data_updated_at,
+                left_ctrl_trigger=self.tvuer.left_ctrl_trigger,
+                left_ctrl_triggerValue=10.0 - self.tvuer.left_ctrl_triggerValue * 10,
+                left_ctrl_squeeze=self.tvuer.left_ctrl_squeeze,
+                left_ctrl_squeezeValue=self.tvuer.left_ctrl_squeezeValue,
+                left_ctrl_aButton=self.tvuer.left_ctrl_aButton,
+                left_ctrl_bButton=self.tvuer.left_ctrl_bButton,
+                left_ctrl_thumbstick=self.tvuer.left_ctrl_thumbstick,
+                left_ctrl_thumbstickValue=self.tvuer.left_ctrl_thumbstickValue,
+                right_ctrl_trigger=self.tvuer.right_ctrl_trigger,
+                right_ctrl_triggerValue=10.0 - self.tvuer.right_ctrl_triggerValue * 10,
+                right_ctrl_squeeze=self.tvuer.right_ctrl_squeeze,
+                right_ctrl_squeezeValue=self.tvuer.right_ctrl_squeezeValue,
+                right_ctrl_aButton=self.tvuer.right_ctrl_aButton,
+                right_ctrl_bButton=self.tvuer.right_ctrl_bButton,
+                right_ctrl_thumbstick=self.tvuer.right_ctrl_thumbstick,
+                right_ctrl_thumbstickValue=self.tvuer.right_ctrl_thumbstickValue,
+            )
 
         # hand tracking
         if self.use_hand_tracking:
@@ -424,6 +450,7 @@ class TeleVuerWrapper:
                 right_hand_pinchValue=self.tvuer.right_hand_pinchValue * 100.0,
                 right_hand_squeeze=self.tvuer.right_hand_squeeze,
                 right_hand_squeezeValue=self.tvuer.right_hand_squeezeValue,
+                **controller_data,
             )
         # controller tracking
         else:
@@ -447,22 +474,7 @@ class TeleVuerWrapper:
                 left_wrist_pose=left_IPunitree_Brobot_waist_arm,
                 right_wrist_pose=right_IPunitree_Brobot_waist_arm,
                 motion_data_ready=self.tvuer.motion_data_ready,
-                left_ctrl_trigger=self.tvuer.left_ctrl_trigger,
-                left_ctrl_triggerValue=10.0 - self.tvuer.left_ctrl_triggerValue * 10,
-                left_ctrl_squeeze=self.tvuer.left_ctrl_squeeze,
-                left_ctrl_squeezeValue=self.tvuer.left_ctrl_squeezeValue,
-                left_ctrl_aButton=self.tvuer.left_ctrl_aButton,
-                left_ctrl_bButton=self.tvuer.left_ctrl_bButton,
-                left_ctrl_thumbstick=self.tvuer.left_ctrl_thumbstick,
-                left_ctrl_thumbstickValue=self.tvuer.left_ctrl_thumbstickValue,
-                right_ctrl_trigger=self.tvuer.right_ctrl_trigger,
-                right_ctrl_triggerValue=10.0 - self.tvuer.right_ctrl_triggerValue * 10,
-                right_ctrl_squeeze=self.tvuer.right_ctrl_squeeze,
-                right_ctrl_squeezeValue=self.tvuer.right_ctrl_squeezeValue,
-                right_ctrl_aButton=self.tvuer.right_ctrl_aButton,
-                right_ctrl_bButton=self.tvuer.right_ctrl_bButton,
-                right_ctrl_thumbstick=self.tvuer.right_ctrl_thumbstick,
-                right_ctrl_thumbstickValue=self.tvuer.right_ctrl_thumbstickValue,
+                **controller_data,
             )
         
     def render_to_xr(self, img):
