@@ -16,7 +16,8 @@ dependencies = [
     "numpy<2.0.0",
     "opencv-python",
     "logging-mp",
-    "vuer[all]==0.0.60"
+    # TeleVuer imports Vuer/Body from the 0.1 API; 0.0.60 lacks these exports.
+    "vuer==0.1.6"
 ]
 
 [tool.setuptools]
