@@ -195,6 +195,7 @@ class TeleData:
     right_hand_squeezeValue: float = 0.0   # (0.0 → 1.0) degree of hand squeeze
 
     motion_data_ready: bool = False        # True after the first hand or controller motion data event is received
+    hand_data_updated_at: float = 0.0
     body_poses: np.ndarray = None          # (33,4,4) body joint poses in Robot coordinates
     body_tracking_ready: bool = False
     # controller tracking
@@ -444,6 +445,7 @@ class TeleVuerWrapper:
                 left_hand_rot=left_Brobot_arm_hand_rot,
                 right_hand_rot=right_Brobot_arm_hand_rot,
                 motion_data_ready=self.tvuer.motion_data_ready,
+                hand_data_updated_at=self.tvuer.hand_data_updated_at,
                 body_poses=body_poses,
                 body_tracking_ready=self.tvuer.body_tracking_ready,
                 left_hand_pinch=self.tvuer.left_hand_pinch,
@@ -478,6 +480,7 @@ class TeleVuerWrapper:
                 left_wrist_pose=left_IPunitree_Brobot_waist_arm,
                 right_wrist_pose=right_IPunitree_Brobot_waist_arm,
                 motion_data_ready=self.tvuer.motion_data_ready,
+                hand_data_updated_at=self.tvuer.hand_data_updated_at,
                 **controller_data,
             )
         

@@ -23,6 +23,13 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
         tvuer.left_arm_pose_shared = Array('d', [1.0] * 16, lock=True)
         tvuer.right_arm_pose_shared = Array('d', [2.0] * 16, lock=True)
         tvuer.motion_data_ready_shared = Value('b', False, lock=True)
+        tvuer.hand_data_updated_at_shared = Value('d', 0.0, lock=True)
+        for side in ("left", "right"):
+            setattr(tvuer, f"{side}_hand_position_shared", Array('d', 75, lock=True))
+            setattr(tvuer, f"{side}_hand_orientation_shared", Array('d', 25 * 9, lock=True))
+            for name in ("pinch", "squeeze"):
+                setattr(tvuer, f"{side}_hand_{name}_shared", Value('b', False, lock=True))
+                setattr(tvuer, f"{side}_hand_{name}Value_shared", Value('d', 0.0, lock=True))
         tvuer.left_controller_data_updated_at_shared = Value('d', 0.0, lock=True)
         tvuer.controller_data_updated_at_shared = Value('d', 0.0, lock=True)
         for prefix in ("left", "right"):
@@ -82,11 +89,41 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(nodes, ["Hands", "MotionControllers"])
 
+    async def test_hand_and_controller_events_update_together(self):
+        tvuer = self.hybrid_tvuer()
+        hand = [0.0] * (25 * 16)
+        for i in range(25):
+            hand[i * 16:i * 16 + 16] = np.eye(4).flatten(order="F")
+        await tvuer.on_hand_move(type("Event", (), {"value": {
+            "left": [3.0] * 16 + hand,
+            "right": [4.0] * 16 + hand,
+            "leftState": {}, "rightState": {},
+        }})(), None)
+        hand_timestamp = tvuer.hand_data_updated_at
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "left": [5.0] * 16,
+            "right": [6.0] * 16,
+            "leftState": {"thumbstickValue": [-0.2, 0.7], "bButton": True},
+            "rightState": {"thumbstickValue": [0.4, -0.8], "aButton": True},
+        }})(), None)
+
+        self.assertEqual(list(tvuer.left_arm_pose_shared), [3.0] * 16)
+        self.assertEqual(list(tvuer.right_arm_pose_shared), [4.0] * 16)
+        self.assertGreater(hand_timestamp, 0.0)
+        self.assertEqual(tvuer.hand_data_updated_at, hand_timestamp)
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [-0.2, 0.7])
+        np.testing.assert_allclose(tvuer.right_ctrl_thumbstickValue, [0.4, -0.8])
+        self.assertTrue(tvuer.left_ctrl_bButton)
+        self.assertTrue(tvuer.right_ctrl_aButton)
+        self.assertGreater(tvuer.left_controller_data_updated_at, 0.0)
+        self.assertGreater(tvuer.right_controller_data_updated_at, 0.0)
+
     def test_hand_teledata_includes_controller_axes(self):
         tvuer = SimpleNamespace(
             head_pose=np.eye(4), left_arm_pose=np.eye(4), right_arm_pose=np.eye(4),
             left_hand_positions=np.zeros((25, 3)), right_hand_positions=np.zeros((25, 3)),
             motion_data_ready=True, body_tracking_ready=False,
+            hand_data_updated_at=122.0,
             controller_data_updated_at=123.0,
             left_controller_data_updated_at=122.0,
             right_controller_data_updated_at=123.0,
@@ -119,6 +156,7 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tele_data.left_controller_data_updated_at, 122.0)
         self.assertEqual(tele_data.right_controller_data_updated_at, 123.0)
         self.assertEqual(tele_data.controller_data_updated_at, 123.0)
+        self.assertEqual(tele_data.hand_data_updated_at, 122.0)
 
 
 if __name__ == "__main__":

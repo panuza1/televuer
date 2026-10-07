@@ -146,6 +146,7 @@ class TeleVuer:
         self.left_arm_pose_shared = Array('d', 16, lock=True)
         self.right_arm_pose_shared = Array('d', 16, lock=True)
         self.motion_data_ready_shared = Value('b', False, lock=True)
+        self.hand_data_updated_at_shared = Value('d', 0.0, lock=True)
         if self.use_body_tracking:
             self.body_pose_shared = Array('d', 33 * 16, lock=True)
             self.body_tracking_ready_shared = Value('b', False, lock=True)
@@ -359,6 +360,8 @@ class TeleVuer:
             extract_hands(right_hand, "right")
             with self.motion_data_ready_shared.get_lock():
                 self.motion_data_ready_shared.value = True
+            with self.hand_data_updated_at_shared.get_lock():
+                self.hand_data_updated_at_shared.value = time.monotonic()
 
         except:
             pass
@@ -754,6 +757,11 @@ class TeleVuer:
         """np.ndarray, shape (4, 4), right arm SE(3) pose matrix from Vuer (basis OpenXR Convention)."""
         with self.right_arm_pose_shared.get_lock():
             return np.array(self.right_arm_pose_shared[:]).reshape(4, 4, order="F")
+
+    @property
+    def hand_data_updated_at(self):
+        with self.hand_data_updated_at_shared.get_lock():
+            return self.hand_data_updated_at_shared.value
 
     # ==================== Hand Tracking Data ====================
     @property
