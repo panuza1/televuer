@@ -269,12 +269,26 @@ class TeleVuer:
     async def on_controller_move(self, event, session, fps=60):
         """https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html"""
         try:
+            left_pose = event.value.get("left")
+            right_pose = event.value.get("right")
             # Hand tracking remains the only arm-pose source in hybrid mode.
             if not self.use_hand_tracking:
-                with self.left_arm_pose_shared.get_lock():
-                    self.left_arm_pose_shared[:] = event.value["left"]
-                with self.right_arm_pose_shared.get_lock():
-                    self.right_arm_pose_shared[:] = event.value["right"]
+                def update_pose(pose, shared_pose):
+                    if pose is None:
+                        return False
+                    pose = np.asarray(pose, dtype=np.float64)
+                    if pose.size != 16 or not np.all(np.isfinite(pose)):
+                        return False
+                    if np.isclose(np.linalg.det(pose.reshape(4, 4, order="F")), 0.0, atol=1e-6):
+                        return False
+                    with shared_pose.get_lock():
+                        shared_pose[:] = pose
+                    return True
+
+                left_pose_updated = update_pose(left_pose, self.left_arm_pose_shared)
+                right_pose_updated = update_pose(right_pose, self.right_arm_pose_shared)
+            else:
+                left_pose_updated = right_pose_updated = False
             # ControllerState
             left_controller = event.value.get("leftState")
             right_controller = event.value.get("rightState")
@@ -303,13 +317,19 @@ class TeleVuer:
 
             if left_controller is not None:
                 extract_controllers(left_controller, "left")
+            if left_pose_updated or (self.use_hand_tracking and left_controller is not None):
                 with self.left_controller_data_updated_at_shared.get_lock():
                     self.left_controller_data_updated_at_shared.value = time.monotonic()
             if right_controller is not None:
                 extract_controllers(right_controller, "right")
+            if right_pose_updated or (self.use_hand_tracking and right_controller is not None):
                 with self.controller_data_updated_at_shared.get_lock():
                     self.controller_data_updated_at_shared.value = time.monotonic()
-            if not self.use_hand_tracking and right_controller is not None:
+            if (
+                not self.use_hand_tracking
+                and self.left_controller_data_updated_at > 0.0
+                and self.right_controller_data_updated_at > 0.0
+            ):
                 with self.motion_data_ready_shared.get_lock():
                     self.motion_data_ready_shared.value = True
         except:
