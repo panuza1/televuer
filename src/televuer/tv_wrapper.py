@@ -2,6 +2,7 @@ import numpy as np
 from .televuer import TeleVuer
 from dataclasses import dataclass, field
 from typing import Literal
+from .body_joints import BODY_JOINT_INDEX
 """
 (basis) OpenXR Convention : y up, z back, x right. 
 (basis) Robot  Convention : z up, y left, x front.  
@@ -198,6 +199,7 @@ class TeleData:
     hand_data_updated_at: float = 0.0
     body_poses: np.ndarray = None          # (33,4,4) body joint poses in Robot coordinates
     body_tracking_ready: bool = False
+    body_data_updated_at: float = 0.0
     # controller tracking
     controller_data_updated_at: float = 0.0  # backwards-compatible right controller timestamp
     left_controller_data_updated_at: float = 0.0
@@ -236,7 +238,7 @@ class TeleVuerWrapper:
                        binocular: bool=True, img_shape: tuple=(480, 1280), display_fps: float=30.0,
                        display_mode: Literal["immersive", "pass-through", "ego"]="immersive", zmq: bool=False, webrtc: bool=False, webrtc_url: str=None, 
                        cert_file: str=None, key_file: str=None, return_hand_rot_data: bool=False,
-                       arm_reference_mode: Literal["head_position", "head_yaw"]="head_yaw"):
+                       arm_reference_mode: Literal["head_position", "head_yaw"]="head_yaw", debug_xr_events: bool=False):
         """
         TeleVuerWrapper is a wrapper for the TeleVuer class, which handles XR device's data suit for robot control.
         It initializes the TeleVuer instance with the specified parameters and provides a method to get motion state data.
@@ -291,7 +293,7 @@ class TeleVuerWrapper:
                               use_controller_input=self.use_controller_input,
                               binocular=binocular, img_shape=img_shape, display_fps=display_fps,
                               display_mode=display_mode, zmq=zmq, webrtc=webrtc, webrtc_url=webrtc_url, 
-                              cert_file=cert_file, key_file=key_file)
+                              cert_file=cert_file, key_file=key_file, debug_xr_events=debug_xr_events)
         
     def get_tele_data(self):
         """
@@ -313,6 +315,7 @@ class TeleVuerWrapper:
 
         # TeleVuer (Vuer) obtains all raw data under the (basis) OpenXR Convention.
         Bxr_world_head, head_pose_is_valid = safe_mat_update(CONST_HEAD_POSE, self.tvuer.head_pose)
+        Brobot_world_head = T_ROBOT_OPENXR @ Bxr_world_head @ T_OPENXR_ROBOT
         controller_data = {}
         if self.use_controller_input:
             controller_data = dict(
@@ -337,6 +340,37 @@ class TeleVuerWrapper:
                 right_ctrl_thumbstickValue=self.tvuer.right_ctrl_thumbstickValue,
             )
 
+        # body tracking owns arm targets when enabled; controller poses remain input-only.
+        if self.use_body_tracking:
+            body_poses_openxr = self.tvuer.body_poses
+            body_poses = (
+                np.stack([T_ROBOT_OPENXR @ pose @ T_OPENXR_ROBOT for pose in body_poses_openxr])
+                if self.tvuer.body_tracking_ready else None
+            )
+            left_wrist = body_poses_openxr[BODY_JOINT_INDEX["left-hand-wrist-twist"]]
+            right_wrist = body_poses_openxr[BODY_JOINT_INDEX["right-hand-wrist-twist"]]
+            left_wrist, left_valid = safe_mat_update(CONST_LEFT_ARM_POSE, left_wrist)
+            right_wrist, right_valid = safe_mat_update(CONST_RIGHT_ARM_POSE, right_wrist)
+            left_world = T_ROBOT_OPENXR @ left_wrist @ T_OPENXR_ROBOT
+            right_world = T_ROBOT_OPENXR @ right_wrist @ T_OPENXR_ROBOT
+            left_world = left_world @ (T_TO_UNITREE_HUMANOID_LEFT_ARM if left_valid else np.eye(4))
+            right_world = right_world @ (T_TO_UNITREE_HUMANOID_RIGHT_ARM if right_valid else np.eye(4))
+            return TeleData(
+                head_pose=Brobot_world_head,
+                left_wrist_pose=transform_IPunitree_Brobot_world_arm_to_head_then_waist(
+                    left_world, Brobot_world_head, self.arm_reference_mode
+                ),
+                right_wrist_pose=transform_IPunitree_Brobot_world_arm_to_head_then_waist(
+                    right_world, Brobot_world_head, self.arm_reference_mode
+                ),
+                motion_data_ready=self.tvuer.motion_data_ready,
+                hand_data_updated_at=self.tvuer.hand_data_updated_at,
+                body_poses=body_poses,
+                body_tracking_ready=self.tvuer.body_tracking_ready,
+                body_data_updated_at=self.tvuer.body_data_updated_at,
+                **controller_data,
+            )
+
         # hand tracking
         if self.use_hand_tracking:
             # 'Arm' pose data follows (basis) OpenXR Convention and (initial pose) OpenXR Arm Convention.
@@ -356,7 +390,6 @@ class TeleVuerWrapper:
             #   - Then, apply the rotation PoseMatrix_openxr in the OpenXR Convention (The function of PoseMatrix_openxr)
             #   - Finally, transform back to the Robot Convention (The function of T_{robot}_{openxr})
             #   - This results in the same rotation effect under the Robot Convention as in the OpenXR Convention.
-            Brobot_world_head = T_ROBOT_OPENXR @ Bxr_world_head @ T_OPENXR_ROBOT
             left_IPxr_Brobot_world_arm  = T_ROBOT_OPENXR @ left_IPxr_Bxr_world_arm @ T_OPENXR_ROBOT
             right_IPxr_Brobot_world_arm = T_ROBOT_OPENXR @ right_IPxr_Bxr_world_arm @ T_OPENXR_ROBOT
 
@@ -465,7 +498,6 @@ class TeleVuerWrapper:
             right_IPunitree_Bxr_world_arm, right_arm_is_valid = safe_mat_update(CONST_RIGHT_ARM_POSE, self.tvuer.right_arm_pose)
 
             # Change basis convention
-            Brobot_world_head = T_ROBOT_OPENXR @ Bxr_world_head @ T_OPENXR_ROBOT
             left_IPunitree_Brobot_world_arm  = T_ROBOT_OPENXR @ left_IPunitree_Bxr_world_arm @ T_OPENXR_ROBOT
             right_IPunitree_Brobot_world_arm = T_ROBOT_OPENXR @ right_IPunitree_Bxr_world_arm @ T_OPENXR_ROBOT
 

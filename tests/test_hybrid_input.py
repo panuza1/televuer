@@ -11,14 +11,34 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from televuer.televuer import TeleVuer
-from televuer.tv_wrapper import T_OPENXR_ROBOT, T_ROBOT_OPENXR, TeleVuerWrapper
+from televuer.body_joints import BODY_JOINT_INDEX, BODY_JOINT_KEYS
+from televuer.tv_wrapper import (
+    T_OPENXR_ROBOT,
+    T_ROBOT_OPENXR,
+    T_TO_UNITREE_HUMANOID_LEFT_ARM,
+    T_TO_UNITREE_HUMANOID_RIGHT_ARM,
+    TeleVuerWrapper,
+)
 
 
 class HybridInputTest(unittest.IsolatedAsyncioTestCase):
+    def test_vuer_016_arm_joint_indices(self):
+        self.assertEqual(
+            {name: BODY_JOINT_INDEX[name] for name in (
+                "left-shoulder", "left-arm-lower", "left-hand-wrist-twist",
+                "right-shoulder", "right-arm-lower", "right-hand-wrist-twist",
+            )},
+            {
+                "left-shoulder": 7, "left-arm-lower": 10, "left-hand-wrist-twist": 11,
+                "right-shoulder": 12, "right-arm-lower": 15, "right-hand-wrist-twist": 16,
+            },
+        )
+
     @staticmethod
     def hybrid_tvuer():
         tvuer = TeleVuer.__new__(TeleVuer)
         tvuer.use_hand_tracking = True
+        tvuer.use_body_tracking = False
         tvuer.use_controller_input = True
         tvuer.left_arm_pose_shared = Array('d', [1.0] * 16, lock=True)
         tvuer.right_arm_pose_shared = Array('d', [2.0] * 16, lock=True)
@@ -38,6 +58,17 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
             for name in ("triggerValue", "squeezeValue"):
                 setattr(tvuer, f"{prefix}_ctrl_{name}_shared", Value('d', 0.0, lock=True))
             setattr(tvuer, f"{prefix}_ctrl_thumbstickValue_shared", Array('d', 2, lock=True))
+        return tvuer
+
+    @classmethod
+    def body_controller_tvuer(cls):
+        tvuer = cls.hybrid_tvuer()
+        tvuer.use_hand_tracking = False
+        tvuer.use_body_tracking = True
+        tvuer.head_pose_shared = Array('d', np.eye(4).flatten(order="F"), lock=True)
+        tvuer.body_pose_shared = Array('d', len(BODY_JOINT_KEYS) * 16, lock=True)
+        tvuer.body_tracking_ready_shared = Value('b', False, lock=True)
+        tvuer.body_data_updated_at_shared = Value('d', 0.0, lock=True)
         return tvuer
 
     async def test_right_only_controller_event_does_not_replace_hand_arm_pose(self):
@@ -146,6 +177,93 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
             await task
 
         self.assertEqual(nodes, ["Hands", "MotionControllers"])
+
+    async def test_body_controller_scene_mounts_body_and_controllers_without_hands(self):
+        tvuer = TeleVuer.__new__(TeleVuer)
+        tvuer.use_hand_tracking = False
+        tvuer.use_body_tracking = True
+        tvuer.use_controller_input = True
+        tvuer.display_fps = 30.0
+        nodes = []
+        session = SimpleNamespace(upsert=lambda node, **kwargs: nodes.append((node, kwargs)))
+
+        task = asyncio.create_task(tvuer.main_pass_through(session))
+        await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        self.assertEqual([type(node).__name__ for node, _ in nodes], ["MotionControllers", "Body"])
+        self.assertEqual([kwargs["to"] for _, kwargs in nodes], ["bgChildren", "bgChildren"])
+        controllers, body = (node for node, _ in nodes)
+        self.assertTrue(controllers.stream)
+        self.assertTrue(controllers.left)
+        self.assertTrue(controllers.right)
+        self.assertTrue(body.stream)
+        self.assertFalse(body.leftHand)
+        self.assertFalse(body.rightHand)
+
+    async def test_body_owns_arm_targets_while_controller_axes_update(self):
+        tvuer = self.body_controller_tvuer()
+        poses = np.repeat(np.eye(4)[None, :, :], len(BODY_JOINT_KEYS), axis=0)
+        poses[BODY_JOINT_INDEX["left-shoulder"]][:3, 3] = [0.1, 1.3, -0.1]
+        poses[BODY_JOINT_INDEX["left-arm-lower"]][:3, 3] = [0.2, 1.1, -0.2]
+        poses[BODY_JOINT_INDEX["left-hand-wrist-twist"]][:3, 3] = [0.3, 0.9, -0.3]
+        poses[BODY_JOINT_INDEX["right-shoulder"]][:3, 3] = [-0.1, 1.3, -0.1]
+        poses[BODY_JOINT_INDEX["right-arm-lower"]][:3, 3] = [-0.2, 1.1, -0.2]
+        poses[BODY_JOINT_INDEX["right-hand-wrist-twist"]][:3, 3] = [-0.3, 0.9, -0.3]
+        await tvuer.on_body_move(type("Event", (), {"value": {
+            "body": np.concatenate([pose.flatten(order="F") for pose in poses]),
+        }})(), None)
+        body_timestamp = tvuer.body_data_updated_at
+        original_left = list(tvuer.left_arm_pose_shared)
+        original_right = list(tvuer.right_arm_pose_shared)
+
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "left": np.full(16, 7.0),
+            "right": np.full(16, 8.0),
+            "leftState": {"thumbstickValue": [-0.2, -0.8]},
+            "rightState": {"thumbstickValue": [0.4, 0.0]},
+        }})(), None)
+
+        self.assertEqual(list(tvuer.left_arm_pose_shared), original_left)
+        self.assertEqual(list(tvuer.right_arm_pose_shared), original_right)
+        self.assertEqual(tvuer.body_data_updated_at, body_timestamp)
+        self.assertGreater(tvuer.left_controller_data_updated_at, 0.0)
+        self.assertGreater(tvuer.right_controller_data_updated_at, 0.0)
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [-0.2, -0.8])
+        np.testing.assert_allclose(tvuer.right_ctrl_thumbstickValue, [0.4, 0.0])
+
+        wrapper = TeleVuerWrapper.__new__(TeleVuerWrapper)
+        wrapper.use_hand_tracking = False
+        wrapper.use_body_tracking = True
+        wrapper.use_controller_input = True
+        wrapper.return_hand_rot_data = False
+        wrapper.arm_reference_mode = "head_yaw"
+        wrapper.tvuer = tvuer
+        data = wrapper.get_tele_data()
+
+        left_raw = poses[BODY_JOINT_INDEX["left-hand-wrist-twist"]]
+        right_raw = poses[BODY_JOINT_INDEX["right-hand-wrist-twist"]]
+        expected_left = T_ROBOT_OPENXR @ left_raw @ T_OPENXR_ROBOT @ T_TO_UNITREE_HUMANOID_LEFT_ARM
+        expected_right = T_ROBOT_OPENXR @ right_raw @ T_OPENXR_ROBOT @ T_TO_UNITREE_HUMANOID_RIGHT_ARM
+        expected_left[:3, 3] += [0.15, 0.0, 0.45]
+        expected_right[:3, 3] += [0.15, 0.0, 0.45]
+        np.testing.assert_allclose(data.left_wrist_pose, expected_left)
+        np.testing.assert_allclose(data.right_wrist_pose, expected_right)
+        self.assertEqual(data.body_data_updated_at, body_timestamp)
+
+    async def test_invalid_body_frame_does_not_refresh_body_timestamp(self):
+        tvuer = self.body_controller_tvuer()
+        poses = np.repeat(np.eye(4)[None, :, :], len(BODY_JOINT_KEYS), axis=0)
+        poses[BODY_JOINT_INDEX["left-hand-wrist-twist"]] = 0.0
+
+        await tvuer.on_body_move(type("Event", (), {"value": {
+            "body": np.concatenate([pose.flatten(order="F") for pose in poses]),
+        }})(), None)
+
+        self.assertFalse(tvuer.body_tracking_ready)
+        self.assertEqual(tvuer.body_data_updated_at, 0.0)
 
     async def test_hand_and_controller_events_update_together(self):
         tvuer = self.hybrid_tvuer()
