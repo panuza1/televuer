@@ -313,13 +313,19 @@ class TeleVuer:
                 def update_pose(pose, shared_pose):
                     if pose is None:
                         return False
-                    pose = np.asarray(pose, dtype=np.float64)
-                    if pose.size != 16 or not np.all(np.isfinite(pose)):
+                    if isinstance(pose, (bytes, bytearray, memoryview, str)):
                         return False
-                    if np.isclose(np.linalg.det(pose.reshape(4, 4, order="F")), 0.0, atol=1e-6):
+                    try:
+                        pose = np.asarray(pose, dtype=np.float64)
+                    except (TypeError, ValueError, OverflowError):
+                        return False
+                    if pose.shape not in ((4, 4), (16,)) or not np.all(np.isfinite(pose)):
+                        return False
+                    matrix = pose.reshape(4, 4, order="F")
+                    if np.isclose(np.linalg.det(matrix), 0.0, atol=1e-6):
                         return False
                     with shared_pose.get_lock():
-                        shared_pose[:] = pose
+                        shared_pose[:] = matrix.flatten(order="F")
                     return True
 
                 left_pose_updated = update_pose(left_pose, self.left_arm_pose_shared)

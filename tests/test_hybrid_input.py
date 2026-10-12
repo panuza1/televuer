@@ -161,6 +161,102 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_allclose(tvuer.left_arm_pose, left_pose)
         self.assertEqual(tvuer.left_controller_data_updated_at, previous_left_timestamp)
 
+    async def test_controller_six_dof_rotations_and_translations_reach_matching_wrists(self):
+        tvuer = self.hybrid_tvuer()
+        tvuer.use_hand_tracking = False
+        tvuer.head_pose_shared = Array('d', np.eye(4).flatten(order="F"), lock=True)
+        left_pose = np.eye(4)
+        left_pose[:3, :3] = [
+            [1.0, 0.0, 0.0],
+            [0.0, np.cos(0.3), -np.sin(0.3)],
+            [0.0, np.sin(0.3), np.cos(0.3)],
+        ]
+        left_pose[:3, 3] = [0.2, 1.0, -0.3]
+        right_pose = np.eye(4)
+        right_pose[:3, :3] = [
+            [np.cos(-0.4), 0.0, np.sin(-0.4)],
+            [0.0, 1.0, 0.0],
+            [-np.sin(-0.4), 0.0, np.cos(-0.4)],
+        ]
+        right_pose[:3, 3] = [-0.25, 0.9, -0.1]
+
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "left": left_pose,
+            "right": right_pose,
+        }})(), None)
+
+        wrapper = TeleVuerWrapper.__new__(TeleVuerWrapper)
+        wrapper.use_hand_tracking = False
+        wrapper.use_body_tracking = False
+        wrapper.use_controller_input = False
+        wrapper.arm_reference_mode = "head_yaw"
+        wrapper.tvuer = tvuer
+        data = wrapper.get_tele_data()
+        expected_left = T_ROBOT_OPENXR @ left_pose @ T_OPENXR_ROBOT
+        expected_right = T_ROBOT_OPENXR @ right_pose @ T_OPENXR_ROBOT
+        expected_left[:3, 3] += [0.15, 0.0, 0.45]
+        expected_right[:3, 3] += [0.15, 0.0, 0.45]
+        np.testing.assert_allclose(data.left_wrist_pose, expected_left)
+        np.testing.assert_allclose(data.right_wrist_pose, expected_right)
+        self.assertFalse(np.allclose(data.left_wrist_pose[:3, :3], data.right_wrist_pose[:3, :3]))
+
+    async def test_malformed_left_pose_keeps_last_pose_and_does_not_block_right_or_axes(self):
+        tvuer = self.hybrid_tvuer()
+        tvuer.use_hand_tracking = False
+        left_pose = np.eye(4)
+        left_pose[:3, 3] = [0.1, 0.2, 0.3]
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "left": left_pose,
+            "leftState": {"thumbstickValue": [0.1, 0.2]},
+        }})(), None)
+        previous_timestamp = tvuer.left_controller_data_updated_at
+
+        right_pose = np.eye(4)
+        right_pose[:3, 3] = [-0.1, -0.2, -0.3]
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "left": b"\x00",
+            "right": right_pose,
+            "leftState": {"thumbstickValue": [-0.5, 0.75]},
+            "rightState": {"thumbstickValue": [0.25, -0.5], "aButton": True},
+        }})(), None)
+
+        np.testing.assert_allclose(tvuer.left_arm_pose, left_pose)
+        np.testing.assert_allclose(tvuer.right_arm_pose, right_pose)
+        self.assertEqual(tvuer.left_controller_data_updated_at, previous_timestamp)
+        self.assertGreater(tvuer.right_controller_data_updated_at, 0.0)
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [-0.5, 0.75])
+        np.testing.assert_allclose(tvuer.right_ctrl_thumbstickValue, [0.25, -0.5])
+        self.assertTrue(tvuer.right_ctrl_aButton)
+
+    async def test_invalid_controller_pose_shape_preserves_pose_and_timestamp(self):
+        tvuer = self.hybrid_tvuer()
+        tvuer.use_hand_tracking = False
+        pose = np.eye(4)
+        await tvuer.on_controller_move(type("Event", (), {"value": {"left": pose}})(), None)
+        previous_timestamp = tvuer.left_controller_data_updated_at
+
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "left": np.eye(3),
+            "leftState": {"thumbstickValue": [0.4, 0.6]},
+        }})(), None)
+
+        np.testing.assert_allclose(tvuer.left_arm_pose, pose)
+        self.assertEqual(tvuer.left_controller_data_updated_at, previous_timestamp)
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [0.4, 0.6])
+
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "left": np.full(16, np.inf),
+        }})(), None)
+        np.testing.assert_allclose(tvuer.left_arm_pose, pose)
+        self.assertEqual(tvuer.left_controller_data_updated_at, previous_timestamp)
+
+        await tvuer.on_controller_move(type("Event", (), {"value": {
+            "leftState": {"thumbstickValue": [-0.1, 0.2]},
+        }})(), None)
+        np.testing.assert_allclose(tvuer.left_arm_pose, pose)
+        self.assertEqual(tvuer.left_controller_data_updated_at, previous_timestamp)
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [-0.1, 0.2])
+
     async def test_hybrid_scene_mounts_hands_and_controllers(self):
         tvuer = TeleVuer.__new__(TeleVuer)
         tvuer.use_hand_tracking = True
