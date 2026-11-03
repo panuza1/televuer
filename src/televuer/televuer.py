@@ -311,10 +311,13 @@ class TeleVuer:
             controller_poses_drive_arms = not self.use_hand_tracking and not self.use_body_tracking
             if controller_poses_drive_arms:
                 def update_pose(pose, shared_pose):
-                    if pose is None:
+                    if pose is None or isinstance(pose, (bytes, bytearray, memoryview, str)):
                         return False
-                    pose = np.asarray(pose, dtype=np.float64)
-                    if pose.size != 16 or not np.all(np.isfinite(pose)):
+                    try:
+                        pose = np.asarray(pose, dtype=np.float64)
+                    except (TypeError, ValueError, OverflowError):
+                        return False
+                    if pose.shape != (16,) or not np.all(np.isfinite(pose)):
                         return False
                     if np.isclose(np.linalg.det(pose.reshape(4, 4, order="F")), 0.0, atol=1e-6):
                         return False

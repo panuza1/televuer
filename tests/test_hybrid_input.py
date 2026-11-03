@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import sys
 import unittest
+from unittest.mock import patch
 from multiprocessing import Array, Value
 from pathlib import Path
 from types import SimpleNamespace
@@ -160,6 +161,39 @@ class HybridInputTest(unittest.IsolatedAsyncioTestCase):
         }})(), None)
         np.testing.assert_allclose(tvuer.left_arm_pose, left_pose)
         self.assertEqual(tvuer.left_controller_data_updated_at, previous_left_timestamp)
+
+    async def test_invalid_left_pose_does_not_discard_valid_right_controller(self):
+        for invalid in (b'\x00', [b'\x00'], [float('nan')] * 16):
+            tvuer = self.hybrid_tvuer()
+            tvuer.use_hand_tracking = False
+            right_pose = np.eye(4).flatten(order="F")
+            with patch("televuer.televuer.traceback.print_exc") as printed:
+                await tvuer.on_controller_move(SimpleNamespace(value={
+                    "left": invalid, "right": right_pose,
+                    "rightState": {"thumbstickValue": [0.4, -0.2]},
+                }), None)
+            printed.assert_not_called()
+            self.assertEqual(list(tvuer.left_arm_pose_shared), [1.0] * 16)
+            self.assertEqual(tvuer.left_controller_data_updated_at, 0.0)
+            np.testing.assert_array_equal(tvuer.right_arm_pose_shared[:], right_pose)
+            np.testing.assert_allclose(tvuer.right_ctrl_thumbstickValue, [0.4, -0.2])
+            self.assertGreater(tvuer.right_controller_data_updated_at, 0.0)
+
+    async def test_invalid_right_pose_does_not_discard_valid_left_controller(self):
+        tvuer = self.hybrid_tvuer()
+        tvuer.use_hand_tracking = False
+        left_pose = np.eye(4).flatten(order="F")
+        with patch("televuer.televuer.traceback.print_exc") as printed:
+            await tvuer.on_controller_move(SimpleNamespace(value={
+                "left": left_pose, "right": b'\x00',
+                "leftState": {"thumbstickValue": [-0.2, 0.4]},
+            }), None)
+        printed.assert_not_called()
+        np.testing.assert_array_equal(tvuer.left_arm_pose_shared[:], left_pose)
+        np.testing.assert_allclose(tvuer.left_ctrl_thumbstickValue, [-0.2, 0.4])
+        self.assertGreater(tvuer.left_controller_data_updated_at, 0.0)
+        self.assertEqual(list(tvuer.right_arm_pose_shared), [2.0] * 16)
+        self.assertEqual(tvuer.right_controller_data_updated_at, 0.0)
 
     async def test_hybrid_scene_mounts_hands_and_controllers(self):
         tvuer = TeleVuer.__new__(TeleVuer)
